@@ -87,7 +87,9 @@ TRANSFORM_PRIORS_NAMES = immutabledict.immutabledict({
     "adstock":
         frozenset((_EXPONENT, _LAG_WEIGHT)),
     "hill_adstock":
-        frozenset((_LAG_WEIGHT, _HALF_MAX_EFFECTIVE_CONCENTRATION, _SLOPE))
+        frozenset((_LAG_WEIGHT, _HALF_MAX_EFFECTIVE_CONCENTRATION, _SLOPE)),
+    "hill":
+        frozenset((_HALF_MAX_EFFECTIVE_CONCENTRATION, _SLOPE))
 })
 
 GEO_ONLY_PRIORS = frozenset((_COEF_SEASONALITY,))
@@ -130,6 +132,13 @@ def _get_transform_default_priors() -> Mapping[str, Prior]:
           immutabledict.immutabledict({
               _LAG_WEIGHT:
                   dist.Beta(concentration1=2., concentration0=1.),
+              _HALF_MAX_EFFECTIVE_CONCENTRATION:
+                  dist.Gamma(concentration=1., rate=1.),
+              _SLOPE:
+                  dist.Gamma(concentration=1., rate=1.)
+          }),
+      "hill":
+          immutabledict.immutabledict({
               _HALF_MAX_EFFECTIVE_CONCENTRATION:
                   dist.Gamma(concentration=1., rate=1.),
               _SLOPE:
@@ -177,6 +186,49 @@ def transform_adstock(media_data: jnp.ndarray,
       data=media_data, lag_weight=lag_weight, normalise=normalise)
 
   return media_transforms.apply_exponent_safe(data=adstock, exponent=exponent)
+
+
+def transform_hill(
+    media_data: jnp.ndarray,
+    custom_priors: MutableMapping[str, Prior]
+) -> jnp.ndarray:
+  """Transforms the input data with the hill functions.
+
+  Args:
+    media_data: Media data to be transformed. It is expected to have 2 dims for
+      national models and 3 for geo models.
+    custom_priors: The custom priors we want the model to take instead of the
+      default ones. The possible names of parameters for hill are
+      "half_max_effective_concentration" and "slope".
+
+  Returns:
+    The transformed media data.
+  """
+  transform_default_priors = _get_transform_default_priors()["hill"]
+
+  with numpyro.plate(name=f"{_HALF_MAX_EFFECTIVE_CONCENTRATION}_plate",
+                     size=media_data.shape[1]):
+    half_max_effective_concentration = numpyro.sample(
+        name=_HALF_MAX_EFFECTIVE_CONCENTRATION,
+        fn=custom_priors.get(
+            _HALF_MAX_EFFECTIVE_CONCENTRATION,
+            transform_default_priors[_HALF_MAX_EFFECTIVE_CONCENTRATION]))
+
+  with numpyro.plate(name=f"{_SLOPE}_plate",
+                     size=media_data.shape[1]):
+    slope = numpyro.sample(
+        name=_SLOPE,
+        fn=custom_priors.get(_SLOPE, transform_default_priors[_SLOPE]))
+
+  if media_data.ndim == 3:
+    half_max_effective_concentration = jnp.expand_dims(
+        half_max_effective_concentration, axis=-1)
+    slope = jnp.expand_dims(slope, axis=-1)
+
+  return media_transforms.hill(
+      data=media_data,
+      half_max_effective_concentration=half_max_effective_concentration,
+      slope=slope)
 
 
 def transform_hill_adstock(media_data: jnp.ndarray,
